@@ -3,7 +3,7 @@ module github.com/kengou/jira-ticket-creator
 go 1.26
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.55.1
+	github.com/anthropics/anthropic-sdk-go v1.66.0
 	github.com/github/copilot-sdk/go v1.0.6
 	github.com/google/jsonschema-go v0.4.3
 	github.com/spf13/cobra v1.10.2
