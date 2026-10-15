@@ -96,7 +96,7 @@ All settings are under the `jiraAiCreator` namespace:
 |---------|------|---------|-------------|
 | `jiraAiCreator.binaryPath` | `string` | `""` (auto-detect from `$PATH`) | Absolute path to the `jira-ai-creator` binary |
 | `jiraAiCreator.jiraUrl` | `string` | `""` | Jira base URL (overrides `JIRA_URL` env var) |
-| `jiraAiCreator.cloud` | `boolean` | `false` | Use Jira Cloud API (v3) instead of Data Center (v2) |
+| `jiraAiCreator.cloud` | `boolean` | `false` | **Deprecated** — Jira Cloud (including custom domains) is detected automatically. When `true` the extension still passes `--cloud`, which the CLI accepts with a deprecation warning |
 | `jiraAiCreator.aiProvider` | `string` | `""` | Default AI provider: `claude`, `copilot`, or `opencode` |
 
 ## Development

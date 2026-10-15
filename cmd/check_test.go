@@ -4,6 +4,8 @@ package cmd
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -284,5 +286,83 @@ func TestRunPreflightSteps_AuthFail_CallbackReceivesError(t *testing.T) {
 	// project callback must NOT fire
 	if fake.projCalls != 0 {
 		t.Errorf("projCalls = %d, want 0 when auth fails", fake.projCalls)
+	}
+}
+
+// --- runCheck: platform output ---
+
+// newMyselfServer answers paths ending in /myself with 200 {} and everything
+// else with 404.
+func newMyselfServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/myself") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write([]byte(`{}`)); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func TestRunCheck_PrintsSourceAndCustomDomainAPIBase(t *testing.T) {
+	resetAuthGlobals(t)
+	clearJiraEnv(t)
+	server := newMyselfServer(t)
+
+	configFile = ""
+	jiraEmail = "user@acme.com"
+	jiraToken = "tok"
+	resolvedPlatform = jira.Platform{
+		Mode:          jira.ModeCloud,
+		Source:        jira.SourceServerInfo,
+		ConfiguredURL: "https://jira.custom.example",
+		APIBaseURL:    server.URL,
+	}
+
+	var err error
+	_, stderr := captureOutput(t, func() { err = runCheck() })
+	if err != nil {
+		t.Fatalf("runCheck: %v", err)
+	}
+	for _, want := range []string{
+		"Platform mode: Cloud (serverInfo)",
+		"API base: " + server.URL + " (custom domain jira.custom.example)",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr = %q, want it to contain %q", stderr, want)
+		}
+	}
+}
+
+func TestRunCheck_NoAPIBaseLineWithoutCustomDomain(t *testing.T) {
+	resetAuthGlobals(t)
+	clearJiraEnv(t)
+	server := newMyselfServer(t)
+
+	configFile = ""
+	jiraEmail = "user@acme.com"
+	jiraToken = "tok"
+	resolvedPlatform = jira.Platform{
+		Mode:          jira.ModeDataCenter,
+		Source:        jira.SourceServerInfo,
+		ConfiguredURL: server.URL,
+		APIBaseURL:    server.URL,
+	}
+
+	var err error
+	_, stderr := captureOutput(t, func() { err = runCheck() })
+	if err != nil {
+		t.Fatalf("runCheck: %v", err)
+	}
+	if !strings.Contains(stderr, "Platform mode: Data Center (serverInfo)") {
+		t.Errorf("stderr = %q, want it to contain %q", stderr, "Platform mode: Data Center (serverInfo)")
+	}
+	if strings.Contains(stderr, "API base:") {
+		t.Errorf("stderr = %q, must not print an API base line without a custom domain", stderr)
 	}
 }

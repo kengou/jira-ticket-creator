@@ -47,7 +47,7 @@ func runApply() error {
 		fmt.Fprintln(os.Stderr, "   [DRY RUN MODE - No changes will be made]")
 		fmt.Fprintln(os.Stderr)
 	} else {
-		fmt.Fprintf(os.Stderr, "   Target: %s (token: %s)\n\n", jiraURL, maskToken(jiraToken))
+		fmt.Fprintf(os.Stderr, "   Target: %s (token: %s)\n\n", targetLabel(), maskToken(jiraToken))
 	}
 
 	// Read the config file once; reuse the bytes for the reviewed-marker check,
@@ -136,7 +136,7 @@ func runApply() error {
 		// Preflight: verify auth and project access before creating anything.
 		// Dry-run skips this entirely (no network), keeping dry-run offline.
 		fmt.Fprintf(os.Stderr, "%s Running preflight checks...\n", emoji("\U0001f50d", "[CHECK]"))
-		if err := runPreflight(context.Background(), c, resolvedMode, cfg.Defaults.ProjectKey); err != nil {
+		if err := runPreflight(context.Background(), c, resolvedPlatform.Mode, cfg.Defaults.ProjectKey); err != nil {
 			return fmt.Errorf("preflight failed: %w", err)
 		}
 
@@ -145,7 +145,7 @@ func runApply() error {
 
 	// Create applier — mode is the resolved platform mode (cmd/root.go); the
 	// applier derives cloud-ness and selects its field encoder from it.
-	applier := apply.NewApplier(cfg, client, resolvedMode, verbose, dryRun, configFile)
+	applier := apply.NewApplier(cfg, client, resolvedPlatform.Mode, verbose, dryRun, configFile)
 
 	// Apply
 	if err := applier.Apply(context.Background()); err != nil {

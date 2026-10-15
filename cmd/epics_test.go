@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -285,5 +287,70 @@ func TestEpicsToYAML_MultilineDescription(t *testing.T) {
 
 	if cfg.Issues[0].Description != desc {
 		t.Errorf("issues[0].description = %q, want %q", cfg.Issues[0].Description, desc)
+	}
+}
+
+// newBadRequestServer answers every request with 400 so a fetch command fails
+// fast, after its "from" line has been printed.
+func newBadRequestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		if _, err := w.Write([]byte(`{"errorMessages":["test"]}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func TestRunEpics_FromLineNamesAPIBaseViaConfiguredHost(t *testing.T) {
+	resetAuthGlobals(t)
+	clearJiraEnv(t)
+	server := newBadRequestServer(t)
+
+	origProject, origStatus := projectKey, epicStatus
+	t.Cleanup(func() { projectKey, epicStatus = origProject, origStatus })
+	jiraToken = "tok"
+	jiraEmail = "user@acme.com"
+	resolvedPlatform = jira.Platform{Mode: jira.ModeCloud, Source: jira.SourceServerInfo, ConfiguredURL: "https://jira.custom.example", APIBaseURL: server.URL}
+	projectKey = "PROJ"
+	epicStatus = "NOT:Done"
+
+	var err error
+	_, stderr := captureOutput(t, func() { err = runEpics() })
+	if err == nil {
+		t.Fatal("expected error from 400 response")
+	}
+	want := "Fetching Epics for project PROJ (status: NOT:Done) from " + server.URL + " (via jira.custom.example)..."
+	if !strings.Contains(stderr, want) {
+		t.Errorf("stderr = %q, want it to contain %q", stderr, want)
+	}
+}
+
+func TestRunEpics_FromLineWithoutCustomDomain(t *testing.T) {
+	resetAuthGlobals(t)
+	clearJiraEnv(t)
+	server := newBadRequestServer(t)
+
+	origProject, origStatus := projectKey, epicStatus
+	t.Cleanup(func() { projectKey, epicStatus = origProject, origStatus })
+	jiraToken = "tok"
+	jiraEmail = "user@acme.com"
+	resolvedPlatform = jira.Platform{Mode: jira.ModeDataCenter, Source: jira.SourceServerInfo, ConfiguredURL: server.URL, APIBaseURL: server.URL}
+	projectKey = "PROJ"
+	epicStatus = ""
+
+	var err error
+	_, stderr := captureOutput(t, func() { err = runEpics() })
+	if err == nil {
+		t.Fatal("expected error from 400 response")
+	}
+	want := "Fetching Epics for project PROJ from " + server.URL + "..."
+	if !strings.Contains(stderr, want) {
+		t.Errorf("stderr = %q, want it to contain %q", stderr, want)
+	}
+	if strings.Contains(stderr, "(via ") {
+		t.Errorf("stderr = %q, must not contain \"(via \" without a custom domain", stderr)
 	}
 }

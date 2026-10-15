@@ -148,23 +148,22 @@ func projectKeyFromConfig() (string, error) {
 }
 
 // runCheck executes the standalone check command: it reports the detected platform
-// mode (auto-detected vs overridden), the credential style, authentication + API
-// reachability, and (when a project key is available) project access. It returns a
-// non-nil error (→ non-zero exit) on the first failing step.
+// mode and how it was detected, the API base when a Cloud custom domain was
+// resolved to its *.atlassian.net address, the credential style, authentication +
+// API reachability, and (when a project key is available) project access. It
+// returns a non-nil error (→ non-zero exit) on the first failing step.
 //
-// requireAuth must have run before runCheck so that resolvedMode and
-// modeAutoDetected are populated.
+// requireAuth must have run before runCheck so that resolvedPlatform is populated.
 func runCheck() error {
 	pass := emoji("✅", "[OK]")
 	fail := emoji("❌", "[FAIL]")
 
-	// Use the mode and autoDetected flag already resolved by requireAuth.
-	mode := resolvedMode
-	how := "auto-detected"
-	if !modeAutoDetected {
-		how = "explicitly set"
+	// Use the platform already resolved by requireAuth.
+	mode := resolvedPlatform.Mode
+	fmt.Fprintf(os.Stderr, "%s Platform mode: %s (%s)\n", pass, mode, resolvedPlatform.Source)
+	if resolvedPlatform.CustomDomain() {
+		fmt.Fprintf(os.Stderr, "   API base: %s (custom domain %s)\n", resolvedPlatform.APIBaseURL, configuredHost())
 	}
-	fmt.Fprintf(os.Stderr, "%s Platform mode: %s (%s)\n", pass, mode.String(), how)
 	fmt.Fprintf(os.Stderr, "   Credential style: %s\n", credentialStyle(mode))
 
 	client, err := newJiraClient()

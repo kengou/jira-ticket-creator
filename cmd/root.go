@@ -4,8 +4,11 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log"
+	"net/url"
 	"os"
 	"strings"
 
@@ -24,19 +27,19 @@ var (
 	verbose    bool
 	isCloud    bool
 
-	// resolvedMode is the platform mode resolved once by requireAuth and read by
-	// newJiraClient. It is set during the startup auth validation.
-	resolvedMode jira.Mode
-
-	// modeAutoDetected records whether resolvedMode came from URL host
-	// inspection (true) or from an explicit override flag/env (false). Set by
-	// requireAuth alongside resolvedMode.
-	modeAutoDetected bool
+	// resolvedPlatform is the Jira platform resolved once by requireAuth: mode,
+	// how it was detected, the configured URL, and the API base URL every
+	// authenticated request (and therefore every credential) goes to.
+	resolvedPlatform jira.Platform
 
 	// Command-specific flags
 	dryRun          bool
 	continueOnError bool
 )
+
+// detectPlatform resolves the platform for a Jira URL. It is a seam: cmd
+// tests replace it so they never touch the network.
+var detectPlatform = jira.DetectPlatform
 
 var rootCmd = &cobra.Command{
 	Use:   "jira-ai-creator",
@@ -53,15 +56,23 @@ It supports:
 Quick start:
   1. Export credentials:
 
+     Jira Cloud (Atlassian email + API token from id.atlassian.com):
+       export JIRA_URL="https://yourcompany.atlassian.net"
+       export JIRA_EMAIL="you@yourcompany.com"
+       export JIRA_TOKEN="your-api-token"
+
      Jira Data Center (personal access token):
        export JIRA_URL="https://jira.yourcompany.com"
        export JIRA_TOKEN="your-personal-access-token"
 
-     Jira Cloud (Atlassian email + API token from id.atlassian.com;
-     Cloud mode is auto-detected for *.atlassian.net URLs):
-       export JIRA_URL="https://yourcompany.atlassian.net"
-       export JIRA_EMAIL="you@yourcompany.com"
-       export JIRA_TOKEN="your-api-token"
+     The platform is detected automatically: *.atlassian.net URLs are Cloud;
+     any other URL is identified by one unauthenticated request to
+     /rest/api/2/serverInfo, so Cloud sites on a custom domain work and their
+     API calls go to the site's *.atlassian.net address. Run
+     "jira-ai-creator check" to see what was detected. --cloud and
+     JIRA_CLOUD are deprecated.
+     To pin the Cloud tenant, set JIRA_ALLOWED_HOSTS to include both your
+     configured host and its *.atlassian.net host.
 
   2. Validate your config:
      jira-ai-creator validate -f issues.yaml
@@ -84,19 +95,24 @@ func init() {
 	// never appear in --help output. The env vars are applied in requireAuth().
 	rootCmd.PersistentFlags().StringVarP(&configFile, "file", "f", "", "YAML configuration file")
 	rootCmd.PersistentFlags().StringVar(&jiraURL, "jira-url", "", "Jira base URL (env: JIRA_URL)")
-	rootCmd.PersistentFlags().StringVar(&jiraToken, "token", "", "Jira PAT token (env: JIRA_TOKEN)")
+	rootCmd.PersistentFlags().StringVar(&jiraToken, "token", "", "Jira API token (Cloud) or personal access token (Data Center) (env: JIRA_TOKEN)")
 	rootCmd.PersistentFlags().BoolVar(&verbose, "verbose", false, "Enable verbose output")
-	rootCmd.PersistentFlags().BoolVar(&isCloud, "cloud", false, "Force Jira Cloud mode (auto-detected for *.atlassian.net; env: JIRA_CLOUD)")
+	rootCmd.PersistentFlags().BoolVar(&isCloud, "cloud", false, "Deprecated: force Jira Cloud mode (env: JIRA_CLOUD)")
+	if err := rootCmd.PersistentFlags().MarkDeprecated("cloud", "Cloud is detected automatically (including custom domains); the flag will be removed in a future release"); err != nil {
+		log.Fatalf("internal error: failed to mark --cloud deprecated: %v", err)
+	}
 	rootCmd.PersistentFlags().StringVar(&jiraEmail, "email", "", "Atlassian account email for Jira Cloud (env: JIRA_EMAIL)")
 }
 
-// newJiraClient creates a configured Jira client using the resolved platform
-// mode (set by requireAuth) and the current credential globals.
+// newJiraClient creates a configured Jira client for the platform resolved by
+// requireAuth: it talks to resolvedPlatform.APIBaseURL in resolvedPlatform.Mode
+// with the current credential globals. It refuses an unresolved platform, so
+// credentials can never go to an empty or stale base.
 func newJiraClient() (*jira.Client, error) {
-	return jira.NewClientWithMode(jiraURL, resolvedMode, jira.Credentials{
-		Email: jiraEmail,
-		Token: jiraToken,
-	})
+	if resolvedPlatform.APIBaseURL == "" {
+		return nil, errors.New("internal error: Jira platform not resolved (requireAuth must run before newJiraClient)")
+	}
+	return jira.NewClientWithMode(resolvedPlatform.APIBaseURL, resolvedPlatform.Mode, jira.Credentials{Email: jiraEmail, Token: jiraToken})
 }
 
 // maskToken redacts a token for safe logging, exposing only the last 4 characters.
@@ -122,26 +138,31 @@ func emoji(e, fallback string) string {
 	return ui.Emoji(e, fallback)
 }
 
-// resolvePlatformMode builds the mode-override pointer from the --cloud flag
-// and JIRA_CLOUD env var, then delegates to jira.ResolveMode. It returns the
-// resolved Mode and the autoDetected flag from jira.ResolveMode (false when an
-// explicit override was applied, true when the mode was inferred from the URL
-// host). This is the single place that encapsulates all override construction
-// so that runCheck does not need to duplicate it.
-func resolvePlatformMode() (jira.Mode, bool) {
-	var override *bool
-	if isCloud || cloudEnvSet() {
-		forced := true
-		override = &forced
+// configuredHost returns host[:port] of the configured Jira URL for labels and warnings.
+func configuredHost() string {
+	u, err := url.Parse(resolvedPlatform.ConfiguredURL)
+	if err != nil || u.Host == "" {
+		return resolvedPlatform.ConfiguredURL
 	}
-	return jira.ResolveMode(jiraURL, override)
+	return u.Host
 }
 
-// requireAuth applies env-var defaults, resolves the platform mode, and checks
-// that Jira authentication is set. It MUST run before newJiraClient or
-// NewApplier because it populates the package-level resolvedMode and
-// modeAutoDetected globals that those functions read. In Cloud mode a missing
-// email is rejected before any HTTP request is made.
+// targetLabel names where authenticated requests go: the API base URL, plus
+// "(via <configured host>)" when a Cloud custom domain was resolved to its
+// *.atlassian.net address.
+func targetLabel() string {
+	if resolvedPlatform.CustomDomain() {
+		return resolvedPlatform.APIBaseURL + " (via " + configuredHost() + ")"
+	}
+	return resolvedPlatform.APIBaseURL
+}
+
+// requireAuth applies env-var defaults, checks that Jira authentication is set,
+// and detects the Jira platform. It MUST run before newJiraClient, runCheck,
+// runApply (non-dry-run) or targetLabel because it populates the package-level
+// resolvedPlatform global that those read. A failed detection leaves
+// resolvedPlatform zero, so newJiraClient refuses to build a client. In Cloud
+// mode a missing email is rejected before any authenticated request is made.
 func requireAuth() error {
 	// Apply env var defaults when the flag was not explicitly provided.
 	if jiraURL == "" {
@@ -167,22 +188,33 @@ func requireAuth() error {
 		fmt.Fprintln(os.Stderr, emoji("\u26a0\ufe0f", "[WARN]")+"  Warning: --token passed on command line is visible in process listings; prefer setting JIRA_TOKEN env var")
 	}
 
-	// Resolve the platform mode exactly once and store both the mode and
-	// whether it was auto-detected for downstream consumers (e.g. runCheck).
-	mode, autoDetected := resolvePlatformMode()
-	resolvedMode = mode
-	modeAutoDetected = autoDetected
+	envCloud := cloudEnvSet()
+	if envCloud {
+		fmt.Fprintln(os.Stderr, "Warning: JIRA_CLOUD is deprecated: Cloud is detected automatically (including custom domains); unset JIRA_CLOUD. It will be removed in a future release.")
+	}
+
+	// Reset first (plan gate P9): a failed detection must never leave a platform
+	// from an earlier call in place for newJiraClient to send credentials to.
+	resolvedPlatform = jira.Platform{}
+	platform, err := detectPlatform(context.Background(), jiraURL, isCloud || envCloud)
+	if err != nil {
+		return err
+	}
+	resolvedPlatform = platform
+
+	if platform.Source == jira.SourceFallback {
+		fmt.Fprintf(os.Stderr, "Warning: could not detect the Jira platform for %s (%s); assuming Data Center. If this is Jira Cloud, set JIRA_URL to your https://<site>.atlassian.net address.\n", configuredHost(), platform.FallbackReason)
+	}
 
 	if verbose {
-		how := "auto-detected"
-		if !autoDetected {
-			how = "explicitly set"
+		fmt.Fprintf(os.Stderr, "Jira platform mode: %s (%s)\n", platform.Mode, platform.Source)
+		if platform.CustomDomain() {
+			fmt.Fprintf(os.Stderr, "Jira custom domain: %s → API base %s\n", configuredHost(), platform.APIBaseURL)
 		}
-		fmt.Fprintf(os.Stderr, "Jira platform mode: %s (%s)\n", mode.String(), how)
 	}
 
 	// Fail fast: Cloud requires an Atlassian email together with the API token.
-	if mode == jira.ModeCloud && strings.TrimSpace(jiraEmail) == "" {
+	if platform.Mode == jira.ModeCloud && strings.TrimSpace(jiraEmail) == "" {
 		return errors.New("jira Cloud requires an Atlassian email together with an API token (use --email or set JIRA_EMAIL)")
 	}
 
