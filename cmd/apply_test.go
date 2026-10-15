@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/kengou/jira-ticket-creator/internal/jira"
@@ -141,12 +142,10 @@ issues:
 func resetApplyGlobals(t *testing.T) {
 	t.Helper()
 	origCfg, origDry, origURL, origToken, origEmail, origCloud, origYes := configFile, dryRun, jiraURL, jiraToken, jiraEmail, isCloud, applyYes
-	origMode := resolvedMode
-	origAutoDetected := modeAutoDetected
+	origPlatform := resolvedPlatform
 	t.Cleanup(func() {
 		configFile, dryRun, jiraURL, jiraToken, jiraEmail, isCloud, applyYes = origCfg, origDry, origURL, origToken, origEmail, origCloud, origYes
-		resolvedMode = origMode
-		modeAutoDetected = origAutoDetected
+		resolvedPlatform = origPlatform
 	})
 }
 
@@ -183,7 +182,7 @@ func TestRunApply_PreflightFailureAbortsBeforeCreate(t *testing.T) {
 	jiraToken = "bad"
 	jiraEmail = ""
 	isCloud = false
-	resolvedMode = jira.ModeDataCenter
+	resolvedPlatform = jira.Platform{Mode: jira.ModeDataCenter, Source: jira.SourceServerInfo, ConfiguredURL: server.URL, APIBaseURL: server.URL}
 
 	err := runApply()
 	if err == nil {
@@ -254,7 +253,7 @@ issues:
 	jiraToken = "good"
 	jiraEmail = ""
 	isCloud = false
-	resolvedMode = jira.ModeDataCenter
+	resolvedPlatform = jira.Platform{Mode: jira.ModeDataCenter, Source: jira.SourceServerInfo, ConfiguredURL: server.URL, APIBaseURL: server.URL}
 
 	if err := runApply(); err != nil {
 		t.Fatalf("runApply after passing preflight: %v", err)
@@ -288,5 +287,54 @@ func TestRunApply_DryRunMakesNoNetworkCalls(t *testing.T) {
 	}
 	if hits != 0 {
 		t.Errorf("dry-run must make no network calls; observed %d requests", hits)
+	}
+}
+
+func TestRunApply_TargetLineNamesAPIBaseViaConfiguredHost(t *testing.T) {
+	t.Chdir(t.TempDir())
+	resetApplyGlobals(t)
+	clearJiraEnv(t)
+
+	var createHits atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/issue") {
+			createHits.Add(1)
+			w.WriteHeader(http.StatusCreated)
+			if _, err := w.Write([]byte(`{"key":"X-1"}`)); err != nil {
+				t.Errorf("write: %v", err)
+			}
+			return
+		}
+		// /myself auth probe is rejected.
+		w.WriteHeader(http.StatusUnauthorized)
+		if _, err := w.Write([]byte(`{"errorMessages":["Unauthorized"]}`)); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	configFile = writeApplyConfig(t, "PROJ")
+	dryRun = false
+	applyYes = true
+	jiraToken = "tok"
+	jiraEmail = "user@acme.com"
+	isCloud = false
+	resolvedPlatform = jira.Platform{
+		Mode:          jira.ModeCloud,
+		Source:        jira.SourceServerInfo,
+		ConfiguredURL: "https://jira.custom.example",
+		APIBaseURL:    server.URL,
+	}
+
+	var err error
+	_, stderr := captureOutput(t, func() { err = runApply() })
+	if err == nil {
+		t.Fatal("runApply: want preflight error against rejecting server, got nil")
+	}
+	if want := "Target: " + server.URL + " (via jira.custom.example)"; !strings.Contains(stderr, want) {
+		t.Errorf("stderr = %q, want it to contain %q", stderr, want)
+	}
+	if n := createHits.Load(); n != 0 {
+		t.Errorf("no issue must be created when preflight fails; observed %d create requests", n)
 	}
 }

@@ -112,9 +112,9 @@ func epicsToYAML(project string, epics []jira.Epic) ([]byte, error) {
 
 func runEpics() error {
 	if epicStatus != "" {
-		fmt.Fprintf(os.Stderr, "Fetching Epics for project %s (status: %s) from %s...\n\n", projectKey, epicStatus, jiraURL)
+		fmt.Fprintf(os.Stderr, "Fetching Epics for project %s (status: %s) from %s...\n\n", projectKey, epicStatus, targetLabel())
 	} else {
-		fmt.Fprintf(os.Stderr, "Fetching Epics for project %s from %s...\n\n", projectKey, jiraURL)
+		fmt.Fprintf(os.Stderr, "Fetching Epics for project %s from %s...\n\n", projectKey, targetLabel())
 	}
 
 	client, err := newJiraClient()

@@ -105,7 +105,9 @@ func normalizeURL(rawURL string) (string, error) {
 	// Parse the URL to strip userinfo (credentials embedded in URL) and validate structure.
 	parsed, parseErr := url.Parse(rawURL)
 	if parseErr != nil {
-		return "", fmt.Errorf("invalid URL: %w", parseErr)
+		// Do not wrap parseErr: a *url.Error message embeds the raw URL, which
+		// may carry a password (userinfo) from JIRA_URL.
+		return "", errors.New("invalid URL: could not parse the Jira URL (check scheme, host and port)")
 	}
 
 	// Reject explicit http:// for non-loopback addresses — Bearer tokens must
@@ -392,6 +394,16 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body an
 
 		// Success
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			// Jira does not always reject bad credentials with a 401: some endpoints
+			// (e.g. Cloud search/jql) answer 200 and run the request anonymously,
+			// flagging the failed login only in X-Seraph-LoginReason. Fail closed so
+			// an anonymous (typically empty) result is never mistaken for real data.
+			if seraphLoginFailed(resp.Header) {
+				return &APIError{
+					StatusCode: http.StatusUnauthorized,
+					Body:       "Jira rejected the credentials and answered the request anonymously (X-Seraph-LoginReason: " + resp.Header.Get("X-Seraph-LoginReason") + ")",
+				}
+			}
 			if result != nil && len(respBody) > 0 {
 				if err := json.Unmarshal(respBody, result); err != nil {
 					return fmt.Errorf("parse response: %w", err)
@@ -434,6 +446,14 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body an
 	}
 
 	return fmt.Errorf("request failed after %d attempts: %w", c.MaxRetries+1, lastErr)
+}
+
+// seraphLoginFailed reports whether Jira's X-Seraph-LoginReason response header
+// says the supplied credentials were rejected (AUTHENTICATED_FAILED) or not
+// accepted (AUTHENTICATION_DENIED, e.g. CAPTCHA required).
+func seraphLoginFailed(h http.Header) bool {
+	reason := strings.ToUpper(strings.Join(h.Values("X-Seraph-LoginReason"), ","))
+	return strings.Contains(reason, "AUTHENTICATED_FAILED") || strings.Contains(reason, "AUTHENTICATION_DENIED")
 }
 
 // authHeader returns the Authorization header value for the client's mode.

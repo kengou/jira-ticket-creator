@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/kengou/jira-ticket-creator/internal/jira"
@@ -105,5 +106,25 @@ func TestMatchLinkTypes_NoMatch(t *testing.T) {
 	got := matchLinkTypes(types, "nonexistent")
 	if len(got) != 0 {
 		t.Errorf("got %d results, want 0", len(got))
+	}
+}
+
+func TestRunLinkTypes_FromLineNamesAPIBaseViaConfiguredHost(t *testing.T) {
+	resetAuthGlobals(t)
+	clearJiraEnv(t)
+	server := newBadRequestServer(t)
+
+	jiraToken = "tok"
+	jiraEmail = "user@acme.com"
+	resolvedPlatform = jira.Platform{Mode: jira.ModeCloud, Source: jira.SourceServerInfo, ConfiguredURL: "https://jira.custom.example", APIBaseURL: server.URL}
+
+	var err error
+	stdout, _ := captureOutput(t, func() { err = runLinkTypes() })
+	if err == nil {
+		t.Fatal("expected error from 400 response")
+	}
+	want := "Fetching issue link types from " + server.URL + " (via jira.custom.example)..."
+	if !strings.Contains(stdout, want) {
+		t.Errorf("stdout = %q, want it to contain %q", stdout, want)
 	}
 }

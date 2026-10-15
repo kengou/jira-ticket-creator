@@ -132,7 +132,8 @@
           "type": "boolean",
           "default": false,
           "order": 3,
-          "markdownDescription": "Use Jira Cloud API (v3) instead of Data Center (v2). Enable this if your Jira instance is on `*.atlassian.net`."
+          "markdownDescription": "**Deprecated.** The CLI now detects Jira Cloud automatically, including Cloud sites on a custom domain. When enabled, the extension still passes `--cloud`, which the CLI accepts with a deprecation warning.",
+          "markdownDeprecationMessage": "Deprecated: Jira Cloud (including custom domains) is detected automatically. Leave this off; it will be removed in a future release."
         },
         "jiraAiCreator.aiProvider": {
           "type": "string",

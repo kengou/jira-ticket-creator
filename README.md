@@ -15,9 +15,11 @@ A production-ready CLI tool for creating Jira issues from YAML configuration fil
 # 1. Build
 cd jira-ai-creator && go build -o jira-ai-creator
 
-# 2. Configure credentials
-export JIRA_URL="https://jira.yourcompany.com"
-export JIRA_TOKEN="your-personal-access-token"
+# 2. Configure credentials — Jira Cloud (API token from id.atlassian.com)
+export JIRA_URL="https://yourcompany.atlassian.net"   # a Cloud custom domain works too
+export JIRA_EMAIL="you@yourcompany.com"
+export JIRA_TOKEN="your-api-token"
+# Jira Data Center: JIRA_URL="https://jira.yourcompany.com" and a personal access token; no JIRA_EMAIL
 
 # 3. Create issues
 ./jira-ai-creator apply -f docs/examples/stories.yaml
@@ -33,10 +35,12 @@ export JIRA_TOKEN="your-personal-access-token"
 | **Issue Links** | `blocks`, `relates to`, `duplicates` between issues |
 | **Dry Run** | Preview changes without touching Jira |
 | **Validation** | Catch errors before hitting the API |
+| **Platform detection** | Cloud and Data Center detected automatically, including Cloud sites on a custom domain |
 
 ## Commands
 
 ```bash
+jira-ai-creator check                     # Verify connection, detected platform, auth
 jira-ai-creator validate -f issues.yaml   # Check configuration
 jira-ai-creator plan     -f issues.yaml   # Preview creation order
 jira-ai-creator apply    -f issues.yaml   # Create issues in Jira

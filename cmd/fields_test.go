@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/kengou/jira-ticket-creator/internal/jira"
@@ -233,5 +234,25 @@ func TestMatchFields_EmptyInput(t *testing.T) {
 	matched := matchFields(nil)
 	if len(matched) != 0 {
 		t.Errorf("len(matched) = %d, want 0 for nil input", len(matched))
+	}
+}
+
+func TestRunFields_FromLineNamesAPIBaseViaConfiguredHost(t *testing.T) {
+	resetAuthGlobals(t)
+	clearJiraEnv(t)
+	server := newBadRequestServer(t)
+
+	jiraToken = "tok"
+	jiraEmail = "user@acme.com"
+	resolvedPlatform = jira.Platform{Mode: jira.ModeCloud, Source: jira.SourceServerInfo, ConfiguredURL: "https://jira.custom.example", APIBaseURL: server.URL}
+
+	var err error
+	stdout, _ := captureOutput(t, func() { err = runFields() })
+	if err == nil {
+		t.Fatal("expected error from 400 response")
+	}
+	want := "Fetching fields from " + server.URL + " (via jira.custom.example)..."
+	if !strings.Contains(stdout, want) {
+		t.Errorf("stdout = %q, want it to contain %q", stdout, want)
 	}
 }

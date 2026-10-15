@@ -7,37 +7,55 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 )
 
-// boolPtr returns a pointer to b, for passing explicit ResolveMode overrides.
-func boolPtr(b bool) *bool { return &b }
+// TestIntegration_Mode_DetectPlatform realizes the @mode scenario: atlassian.net
+// is Cloud without a probe, a company-hosted server that reports Data Center via
+// serverInfo is Data Center, and the deprecated override forces Cloud.
+func TestIntegration_Mode_DetectPlatform(t *testing.T) {
+	t.Setenv("JIRA_ALLOWED_HOSTS", "")
+	var sawAuth atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			sawAuth.Store(true)
+		}
+		encodeJSON(t, w, map[string]string{"deploymentType": "Server"})
+	}))
+	defer server.Close()
 
-// TestIntegration_Mode_AutoDetectAndOverride realizes the @mode scenario:
-// atlassian.net auto-detects Cloud, company-hosted auto-detects Data Center,
-// and an explicit override forces Cloud on a custom domain.
-func TestIntegration_Mode_AutoDetectAndOverride(t *testing.T) {
 	cases := []struct {
-		name     string
-		url      string
-		override *bool
-		wantMode Mode
-		wantAuto bool
+		name       string
+		url        string
+		force      bool
+		opts       []DetectOption
+		wantMode   Mode
+		wantSource DetectionSource
 	}{
-		{"atlassian_net_auto_cloud", "https://acme.atlassian.net", nil, ModeCloud, true},
-		{"company_hosted_auto_dc", "https://jira.company.com", nil, ModeDataCenter, true},
-		{"override_forces_cloud", "https://jira.company.com", boolPtr(true), ModeCloud, false},
+		{"atlassian_net_auto_cloud", "https://acme.atlassian.net", false, []DetectOption{WithDetectTransport(noProbeTransport(t))}, ModeCloud, SourceHost},
+		{"company_hosted_auto_dc", server.URL, false, nil, ModeDataCenter, SourceServerInfo},
+		{"override_forces_cloud", server.URL, true, nil, ModeCloud, SourceOverride},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			mode, auto := ResolveMode(tc.url, tc.override)
-			if mode != tc.wantMode {
-				t.Errorf("ResolveMode(%q) mode = %v, want %v", tc.url, mode, tc.wantMode)
+			p, err := DetectPlatform(context.Background(), tc.url, tc.force, tc.opts...)
+			if err != nil {
+				t.Fatalf("DetectPlatform(%q) error = %v, want nil", tc.url, err)
 			}
-			if auto != tc.wantAuto {
-				t.Errorf("ResolveMode(%q) autoDetected = %v, want %v", tc.url, auto, tc.wantAuto)
+			if p.Mode != tc.wantMode {
+				t.Errorf("DetectPlatform(%q) mode = %v, want %v", tc.url, p.Mode, tc.wantMode)
+			}
+			if p.Source != tc.wantSource {
+				t.Errorf("DetectPlatform(%q) source = %v, want %v", tc.url, p.Source, tc.wantSource)
+			}
+			if p.APIBaseURL != p.ConfiguredURL {
+				t.Errorf("APIBaseURL = %q, want it to equal ConfiguredURL %q", p.APIBaseURL, p.ConfiguredURL)
 			}
 		})
+	}
+	if sawAuth.Load() {
+		t.Error("serverInfo probe carried an Authorization header")
 	}
 }
 

@@ -265,6 +265,38 @@ func TestNormalizeURL_SchemeCaseNormalized(t *testing.T) {
 	}
 }
 
+func TestNormalizeURL_ParseErrorDoesNotEchoURL(t *testing.T) {
+	// A *url.Error message carries the raw URL, so wrapping it would print a
+	// password embedded in JIRA_URL. The parse error must echo no part of it.
+	cases := []struct {
+		name      string
+		raw       string
+		forbidden []string
+	}{
+		{"password_bad_port", "https://alice:S3CRET@jira.corp.example:badport", []string{"S3CRET", "alice", "jira.corp.example", "badport"}},
+		// The unencoded '#' starts a fragment, so the parse error would leak the
+		// password prefix as the port (":pa").
+		{"unencoded_hash_in_password", "https://alice:pa#ss@jira.corp.example", []string{"alice", "pa#", ":pa", "jira.corp.example"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := normalizeURL(tc.raw)
+			if err == nil {
+				t.Fatal("normalizeURL returned nil error, want a parse error")
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, "invalid URL") {
+				t.Errorf("error %q does not contain %q", msg, "invalid URL")
+			}
+			for _, s := range tc.forbidden {
+				if strings.Contains(msg, s) {
+					t.Errorf("error %q echoes %q from the URL", msg, s)
+				}
+			}
+		})
+	}
+}
+
 func TestNormalizeURL_HTTPSToHTTPRedirectBlocked(t *testing.T) {
 	// Start an HTTP server that redirects to itself (same host, different scheme would
 	// be caught by CheckRedirect). We simulate the redirect block by verifying that
@@ -1092,6 +1124,91 @@ func TestFetchEpics_CloudUsesV3(t *testing.T) {
 
 	if _, err := c.FetchEpics(context.Background(), "PROJ", ""); err != nil {
 		t.Fatalf("FetchEpics: %v", err)
+	}
+}
+
+// Jira answers some requests with bad credentials as 200 + an anonymous (empty)
+// result, flagging the failed login only in X-Seraph-LoginReason. doRequest must
+// fail closed with a 401 APIError, not decode the anonymous body, and not retry.
+func TestDoRequest_SeraphLoginFailureOn2xxIs401(t *testing.T) {
+	for _, reason := range []string{"AUTHENTICATED_FAILED", "AUTHENTICATION_DENIED"} {
+		t.Run(reason, func(t *testing.T) {
+			var attempts int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				atomic.AddInt32(&attempts, 1)
+				w.Header().Set("X-Seraph-LoginReason", reason)
+				w.WriteHeader(http.StatusOK)
+				writeBytes(t, w, []byte(`[{"id":"summary","name":"Summary"}]`))
+			}))
+			defer server.Close()
+
+			c := mustNewClient(t, server.URL, "token", false)
+			c.MaxRetries = 3
+			c.RetryDelay = time.Millisecond
+
+			fields, err := c.FetchFields(context.Background())
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("err = %v, want *APIError with status 401", err)
+			}
+			if !strings.Contains(apiErr.Body, reason) {
+				t.Errorf("error body %q does not name the login reason %q", apiErr.Body, reason)
+			}
+			if fields != nil {
+				t.Errorf("fields = %v, want nil (anonymous result must not be decoded)", fields)
+			}
+			if got := atomic.LoadInt32(&attempts); got != 1 {
+				t.Errorf("attempts = %d, want 1 (auth failure must not be retried)", got)
+			}
+		})
+	}
+}
+
+// A successful login (X-Seraph-LoginReason: OK) is a normal 2xx response.
+func TestDoRequest_SeraphLoginOKIsSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Seraph-LoginReason", "OK")
+		w.WriteHeader(http.StatusOK)
+		writeBytes(t, w, []byte(`[{"id":"summary","name":"Summary"}]`))
+	}))
+	defer server.Close()
+
+	c := mustNewClient(t, server.URL, "token", false)
+	c.MaxRetries = 0
+
+	fields, err := c.FetchFields(context.Background())
+	if err != nil {
+		t.Fatalf("FetchFields: %v", err)
+	}
+	if len(fields) != 1 || fields[0].ID != "summary" {
+		t.Errorf("fields = %+v, want one field with ID summary", fields)
+	}
+}
+
+// Regression: on Cloud, search/jql with rejected credentials returns 200 +
+// {"issues":[],"isLast":true}. FetchEpics must report the auth failure instead
+// of an empty epic list ("No Epics found").
+func TestFetchEpics_CloudAnonymousResultIsAuthError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Seraph-LoginReason", "AUTHENTICATED_FAILED")
+		w.WriteHeader(http.StatusOK)
+		writeBytes(t, w, []byte(`{"issues":[],"isLast":true}`))
+	}))
+	defer server.Close()
+
+	c, err := NewClientWithMode(server.URL, ModeCloud, Credentials{Email: "user@example.com", Token: "token"})
+	if err != nil {
+		t.Fatalf("NewClientWithMode: %v", err)
+	}
+	c.MaxRetries = 0
+
+	epics, err := c.FetchEpics(context.Background(), "PROJ", "NOT:Done")
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("err = %v, want *APIError with status 401", err)
+	}
+	if epics != nil {
+		t.Errorf("epics = %v, want nil", epics)
 	}
 }
 

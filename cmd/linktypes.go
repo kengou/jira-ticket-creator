@@ -68,7 +68,7 @@ func matchLinkTypes(types []jira.IssueLinkTypeInfo, search string) []jira.IssueL
 }
 
 func runLinkTypes() error {
-	fmt.Printf("Fetching issue link types from %s...\n\n", jiraURL)
+	fmt.Printf("Fetching issue link types from %s...\n\n", targetLabel())
 
 	client, err := newJiraClient()
 	if err != nil {
