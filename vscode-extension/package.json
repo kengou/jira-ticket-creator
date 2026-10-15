@@ -171,7 +171,7 @@
     "@eslint/js": "^10.0.1",
     "@types/node": "^24.0.0",
     "@types/vscode": "^1.100.0",
-    "@vscode/vsce": "^3.0.0",
+    "@vscode/vsce": "^4.0.0",
     "esbuild": "^0.28.0",
     "eslint": "^10.5.0",
     "typescript": "^6.0.3",

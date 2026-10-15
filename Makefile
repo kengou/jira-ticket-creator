@@ -27,7 +27,7 @@ vet:
 	$(GO) vet ./...
 
 BINDIR ?= $(shell pwd)/bin
-GOLINT_VERSION ?= 2.13.2
+GOLINT_VERSION ?= 2.14.0
 GOLINT ?= $(BINDIR)/golangci-lint
 
 $(BINDIR):
